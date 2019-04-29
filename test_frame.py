@@ -415,14 +415,18 @@ def torch_run(func, control_f, shape, count=10):
         torch_args.append(None)
     torch_args.extend(shape[9:])
 
-    # warm-up
-    control_f(*(input_torch + torch_args))
-
-    begin = time.time()
-    for i in range(0, count):
+    try:
+        # warm-up
         control_f(*(input_torch + torch_args))
-    end = time.time()
-    torch_time = (end - begin) * 1e3 / count
+
+        begin = time.time()
+        for i in range(0, count):
+            control_f(*(input_torch + torch_args))
+        end = time.time()
+        torch_time = (end - begin) * 1e3 / count
+    except Exception as e:
+        string = "Failed in torch culation for shape {}\n{}".format(shape, str(e))
+        return string
 
     return torch_time
 
@@ -691,8 +695,8 @@ def parallel_evaluate():
         if not isinstance(ans, str):
             torch_time[i]=ans
         else:
-            print(ans)
-            print("now exit...")
+            sys.stdout.write(ans+"now exit...")
+            sys.stdout.flush()
             return -1
 
     for i in gemm_shapes:
@@ -700,8 +704,8 @@ def parallel_evaluate():
         if not isinstance(ans, str):
             torch_time[i]=ans
         else:
-            print(ans)
-            print("now exit...")
+            sys.stdout.write(ans+"now exit...")
+            sys.stdout.flush()
             return -1
 
     for filezip in total_tasks:
@@ -721,7 +725,8 @@ def parallel_evaluate():
         except (ValueError, ReadError):
             score_list = [0 for i in range(20)]
             write_score(student_id, res_path, score_list, score_item, 'Error in Unpacking')
-            print('An error occurs when unpacking the archive:', filezip)
+            sys.stdout.write('An error occurs when unpacking the archive:'+ filezip)
+            sys.stdout.flush()
             continue
 
         # evaluate
