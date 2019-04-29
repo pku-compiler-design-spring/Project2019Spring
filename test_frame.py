@@ -53,11 +53,11 @@ def torch_conv2d(inputs, weight, *arg):
 
     Args:
     -----------------------------
-    inputs, weight, bias : torch.tensor
-        first three args for torch.nn.functional.conv2d
+    inputs, weight: torch.tensor
 
-    shape   : list
-        last args for torch.nn.functional.conv2d
+    arg     : tuple
+        (bias, shape) if if_bias=True
+        (shape) otherwise 
     -----------------------------
 
     Returns:
@@ -409,6 +409,8 @@ def _auto_schedule(auto_schedule_func, func, shape, timeout_create):
         list:[tvm.tensor.Tensor.op] 
 
         list of bufs in func
+
+        timepass: float
         -----------------------------
         '''
 
@@ -427,12 +429,12 @@ def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, ti
 
         Args:
         -----------------------------
-        torch_func      :  torch_conv2d or torch_gemm
+        torch_func      :  torch_conv2d or torch_batch_gemm
             interface of torch function
 
         auto_schedule   : function from student 
 
-        func            : conv2d_nchw or gemm
+        func            : conv2d_nchw or batch_gemm
 
         shape           : list
             args for func
@@ -444,13 +446,13 @@ def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, ti
         times           : int
             times of calculating in Build_and_Run
 
-        timeout_create  : (optional: 10.0) float
+        timeout_create  : float
             time limit in creating schedule
 
-        timeout_build   : (optional: 10.0) float
+        timeout_build   : float
             time limit in building
 
-        timeout_cal     : (optional: 10.0) float
+        timeout_cal     : float
             time limit in calculating
 
         time_count      : Queue
@@ -463,17 +465,26 @@ def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, ti
         -----------------------------
         '''
 
+    
+    # import student module
+    try:
+        student_module = load_module('student_module', *find_module(student_id, ['../extract']))
+    except ImportError:
+        score_list = [0 for i in range(20)]
+        write_score(student_id, res_path, score_list, score_item, 'Error in Importing')
+        print('An error occurs when importing the file as module:', unpack_path)
+        return -1
+
     # testing if auto_schedule work with time limit
     try:
         s, bufs, timepass = _auto_schedule(student_module.auto_schedule, func, shape, timeout_create)
-    except Exception as e:
-        #traceback.print_exc()
+    except:
+        traceback.print_exc()
         print("failed in auto_schedule!")
-        print(e)
         return -1
 
     if timepass>timeout_create:
-        print("Timeout in auto_schedule!")
+        print("timeout in auto_schedule!")
         return -1
 
     # testing calculating speed in Build_and_Run with time limit
@@ -481,22 +492,22 @@ def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, ti
         build_and_run(s, bufs, torch_func, shape, time_count, timeout_build,
                 timeout_cal, times, dev_id, target)
     except Exception as e:
-        print("failed in Build_and_Run!")
+        print("failed in build_and_run!")
         print(e)
         return -1
 
 
-def evaluate(torch_func, student_id, func, shape, target, dev_id=0, timeout_create=10.0, timeout_build=10.0,  timeout_cal=10.0, times=10, max_proc_num = 4):
+def evaluate(torch_func, student_id, func, shape, target, dev_id=0, timeout_create=10.0, timeout_build=10.0,  timeout_cal=10.0, times=10):
     '''evaluating auto_schedule with a single shape
 
         Args:
         -----------------------------
-        torch_func      :  torch_conv2d or torch_gemm
+        torch_func      :  torch_conv2d or torch_batch_gemm
             interface of torch function
 
         student_id      : student module name
 
-        func            : conv2d_nchw or gemm
+        func            : conv2d_nchw or batch_gemm
 
         shape           : a single shape
             args for func
@@ -510,14 +521,12 @@ def evaluate(torch_func, student_id, func, shape, target, dev_id=0, timeout_crea
 
         timeout_cal     : (optional: 10.0) float
             time limit in calculating
-            
+
         timeout_build   : (optional: 10.0) float
             time limit in building
 
         times           : (optional: 10) int
             times of calculating in Build_and_Run
-
-        max_proc_num    : (optional: 4) int
         -----------------------------
 
         Returns:
@@ -541,7 +550,7 @@ def evaluate(torch_func, student_id, func, shape, target, dev_id=0, timeout_crea
         print("failed in creating process!")
 
     # waiting for testing
-    timeout = timeout_create+timeout_cal
+    timeout = timeout_create+timeout_cal+timeout_build
     beg = time.time()
     try:
         while time.time() - beg < timeout:
@@ -611,7 +620,7 @@ def parallel_evaluate():
         shutil.rmtree(imp_dir, ignore_errors=True)
     if not os.path.exists(imp_dir) or not os.path.isdir(imp_dir):
         os.mkdir(imp_dir)
-    
+
     total_tasks = list(os.listdir(sub_dir))
 
     # test coeffs; currently random
@@ -647,7 +656,7 @@ def parallel_evaluate():
             '''
         p.close()
         p.join()
-        
+
         for subp in sub_procs:
             case_time = subp.get()
             if case_time[0] == -1:
