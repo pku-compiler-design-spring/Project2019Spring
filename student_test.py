@@ -44,19 +44,16 @@ def torch_gemm(A, B, *arg):
         torch.tensor
         -----------------------------
         '''
-    return A.mm(B)
+    return A.bmm(B)
 
 
-def torch_conv2d(inputs, weight, bias, shape):
+def torch_conv2d(inputs, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     '''Interface of torch.nn.functional.conv2d
 
     Args:
     -----------------------------
     inputs, weight, bias : torch.tensor
         first three args for torch.nn.functional.conv2d
-
-    shape   : list
-        last args for torch.nn.functional.conv2d
     -----------------------------
 
     Returns:
@@ -65,7 +62,7 @@ def torch_conv2d(inputs, weight, bias, shape):
     torch.tensor
     -----------------------------
     '''
-    return torch.nn.functional.conv2d(inputs, weight, bias, *shape[9:])
+    return torch.nn.functional.conv2d(inputs, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
 
 
 def zero_pad2d(inputs, padding=0):
@@ -108,17 +105,18 @@ def zero_pad2d(inputs, padding=0):
     )
 
 
-def gemm(height, width, length, transposeA=False, transposeB=False, dtype="float32"):
+
+def batch_gemm(batch, height, width, length, transposeA=False, transposeB=False, dtype="float32"):
     """Matrix multiplies matrix
 
     Args:
     -----------------------------
-    height, width, length : int
+    batch, height, width, length : int
         shape of A and B
             A: tvm.tensor.Tensor
-                shape [height, width]
+                shape [batch, height, width]
             B: tvm.tensor.Tensor
-                shape [width, length]
+                shape [batch, width, length]
 
     transposeA: (optional:False) bool
 
@@ -133,28 +131,36 @@ def gemm(height, width, length, transposeA=False, transposeB=False, dtype="float
         shape [A, B, C]
     -----------------------------
     """
-    A = tvm.placeholder((height, width), dtype=dtype, name="A")
-    B = tvm.placeholder((width, length), dtype=dtype, name="B")
+    A = tvm.placeholder((batch, height, width), dtype=dtype, name="A")
+    B = tvm.placeholder((batch, width, length), dtype=dtype, name="B")
     if transposeA and transposeB:
-        k = tvm.reduce_axis((0, B.shape[1]))
-        assert_print(A.shape[0].value == B.shape[1].value)
-        C = tvm.compute((A.shape[1], B.shape[0]), lambda i,
-                        j: tvm.sum(A[k, i] * B[j, k], axis=k))
+        k = tvm.reduce_axis((0, B.shape[2]))
+        assert_print(A.shape[1].value == B.shape[2].value)
+        C = tvm.compute(
+            (A.shape[0], A.shape[2], B.shape[1]), 
+            lambda b, i, j: tvm.sum(A[b, k, i] * B[b, j, k], axis=k)
+            )
     elif transposeA and not transposeB:
-        k = tvm.reduce_axis((0, B.shape[0]))
-        assert_print(A.shape[0].value == B.shape[0].value)
-        C = tvm.compute((A.shape[1], B.shape[1]), lambda i,
-                        j: tvm.sum(A[k, i] * B[k, j], axis=k))
-    elif not transposeA and transposeB:
         k = tvm.reduce_axis((0, B.shape[1]))
         assert_print(A.shape[1].value == B.shape[1].value)
-        C = tvm.compute((A.shape[0], B.shape[0]), lambda i,
-                        j: tvm.sum(A[i, k] * B[j, k], axis=k))
+        C = tvm.compute(
+            (A.shape[0], A.shape[2], B.shape[2]), 
+            lambda b, i, j: tvm.sum(A[b, k, i] * B[b, k, j], axis=k)
+            )
+    elif not transposeA and transposeB:
+        k = tvm.reduce_axis((0, B.shape[2]))
+        assert_print(A.shape[2].value == B.shape[2].value)
+        C = tvm.compute(
+            (A.shape[0], A.shape[1], B.shape[1]), 
+            lambda b, i, j: tvm.sum(A[b, i, k] * B[b, j, k], axis=k)
+            )
     else:
-        k = tvm.reduce_axis((0, B.shape[0]))
-        assert_print(A.shape[1].value == B.shape[0].value)
-        C = tvm.compute((A.shape[0], B.shape[1]), lambda i,
-                        j: tvm.sum(A[i, k] * B[k, j], axis=k))
+        k = tvm.reduce_axis((0, B.shape[1]))
+        assert_print(A.shape[2].value == B.shape[1].value)
+        C = tvm.compute(
+            (A.shape[0], A.shape[1], B.shape[2]), 
+            lambda b, i, j: tvm.sum(A[b, i, k] * B[b, k, j], axis=k)
+            )
 
     return [C.op], [A, B, C]
 
@@ -245,14 +251,14 @@ def conv2d_nchw(batch_size, in_channel, inputs_height, inputs_width, out_channel
     return [Output.op], [inputs, weight, Output]
 
 
-def build_and_run(s, Tensor, control_f, shape, time_count, count=200, device_id=0, tar="llvm"):
+def build_and_run(s, tensors, control_f, shape, time_count, count=10, device_id=0, target="llvm", timeout=10.0):
     """ Build and record the time of running.
 
         Args:
         -----------------------------
         s: schedule.Schedule get form the student's auto_schedule
 
-        Tensor  (list)
+        tensors  (list)
         the input tensors and the output tensor
 
         control_f  the torch function
@@ -278,75 +284,85 @@ def build_and_run(s, Tensor, control_f, shape, time_count, count=200, device_id=
     # Create ctx.
     try:
         ctx = tvm.cpu(device_id)
-    except:
-        print("Can not found device !!!")
-        time_count.put([-1, -1])
+    except Exception as e:
+        string = "Can not found device !!!\n" + str(e)
+        time_count.put([string, -1])
         return -1
-    # Build function form s and Tensor.
+    
     try:
-        f = tvm.build(s, Tensor, name="my_op")
-    except:
-        traceback.print_exc()
-        print("Can not build successfully !!!")
-        time_count.put([-1, -1])
-        return -1
-    try:
-        Output_tensor = Tensor[-1]
-        del Tensor[-1]
-    except:
-        print("The input is not correct !!!")
-        time_count.put([-1, -1])
+        output_tensor = tensors[-1]
+        del tensors[-1]
+    except Exception as e:
+        string = "The input is not correct !!!" + str(e)
+        time_count.put([string, -1])
         return -1
     # Craft input data.
     try:
-        Input_tvm_batch = []
-        Input_torch_batch = []
-        for it in range(0, count):
-            Input_tvm_data = []
-            Input_torch_data = []
+        input_tvm = []
+        input_torch = []
 
-            for i in Tensor:
-                data = np.random.random(
-                    [int(j) for j in i.shape]).astype(np.float32) * 100
-                tvm_data = tvm.nd.array(data, ctx)
-                torch_data = torch.tensor(data)
-                Input_tvm_data.append(tvm_data)
-                Input_torch_data.append(torch_data)
+        for tensor in tensors:
+            data = np.random.random(
+                [int(j) for j in tensor.shape]).astype(np.float32) * 100
+            tvm_data = tvm.nd.array(data, ctx)
+            torch_data = torch.tensor(data)
+            input_tvm.append(tvm_data)
+            input_torch.append(torch_data)
 
-            Output_holder = tvm.nd.array(
-                np.zeros([int(j) for j in Output_tensor.shape],
-                         dtype=Output_tensor.dtype), ctx
-            )
+        output_holder = tvm.nd.array(
+            np.zeros([int(j) for j in output_tensor.shape],
+                        dtype=output_tensor.dtype), ctx
+        )
 
-            Input_tvm_batch.append(Input_tvm_data + [Output_holder])
-            Input_torch_batch.append(Input_torch_data)
-    except:
-        traceback.print_exc()
-        print("Can not create input datas !!!")
-        time_count.put([-1, -1])
+        input_tvm = input_tvm + [output_holder]
+    except Exception as e:
+        string = "Can't prepare input data!!!\n" + str(e)
+        time_count.put([string, -1])
         return -1
-    control_f(*(Input_torch_batch[0]+[shape]))
+    
+    torch_args = []
+    # TODO use shape length to distinguish conv2d and gemm is foolish
+    # No bias if this is convolution
+    if len(shape) > 8 and shape[8] == 0:
+        torch_args.append(None)
+    torch_args.extend(shape[9:])
+    # warm-up
+    control_f(*(input_torch + torch_args))
+    begin = time.time()
+    for i in range(0, count):
+        control_f(*(input_torch + torch_args))
+    end = time.time()
+    torch_time = (end - begin) * 1e3 / count
+
+    # Build function form s and tensors.
     try:
-        tvm_time = 0
-        torch_time = 0
-        for i in range(0, count):
-            begin = time.time()
-            f(*Input_tvm_batch[i])
-            end = time.time()
-            tvm_time += (end - begin)
-            begin = time.time()
-            control_f(*(Input_torch_batch[0]+[shape]))
-            end = time.time()
-            torch_time += (end - begin)
+        func = tvm.build(s, tensors + [output_tensor], target=target)
+    except Exception as e:
+        string = "Can not build successfully !!!" + str(e)
+        time_count.put([string, torch_time])
+        return -1
+
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(ceil(timeout))
+    try:
+        evaluator = func.time_evaluator(func.entry_name, ctx, number=count)
+        tvm_time = evaluator(*input_tvm).mean * 1e3
     except TimeoutError:
-        print("Results of shape", shape, "Timeout!")
-    except:
-        print("Results of shape", shape, "\n| The culation is not correct !!!")
-    print("Results of shape", shape, " \n| your time:", tvm_time, " s| pytorch time:", torch_time, "s\n")
+        string = "Timeout when evaluating, the limit is {}ms".format(timeout / count * 1e3)
+        time_count.put([string, torch_time])
+        return -1
+    except Exception as e:
+        string = "The culation is not correct !!!\n" + str(e)
+        time_count.put([string, torch_time])
+        return -1
+    finally:
+        # restore the default handler
+        signal.signal(signal.SIGALRM,signal.SIG_IGN)
     time_count.put([tvm_time, torch_time])
+    return 0
 
 
-def _auto_schedule(auto_schedule_func, func, shape):
+def _auto_schedule(auto_schedule_func, func, shape, queue, timeout=20 * 60):
     '''Interface of auto_schedule
 
         Args:
@@ -365,10 +381,25 @@ def _auto_schedule(auto_schedule_func, func, shape):
         list of bufs in func
         -----------------------------
         '''
-    return auto_schedule_func(func, shape)
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(ceil(timeout))
+    try:
+        s, bufs = auto_schedule_func(func, shape)
+    except TimeoutError:
+        string = "Timeout when running `auto_schedule` function, time limit is {}ms".format(timeout * 1e3)
+        queue.put([string, -1])
+        return None, None
+    except Exception as e:
+        string = "Error occurs when running `auto_schedule`\n" + str(e)
+        queue.put([string, -1])
+        return None, None
+    finally:
+        # restore the default handler
+        signal.signal(signal.SIGALRM,signal.SIG_IGN)
+    return s, bufs
 
 
-def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, timeout_cal, time_count):
+def _evaluate(torch_func, func, shape, time_count, target="llvm", dev_id=0, times=10, timeout_create=20 * 60, timeout_cal=10.0):
     '''evaluating auto_schedule in special shape
 
         Args:
@@ -402,58 +433,28 @@ def _evaluate(torch_func, func, shape, target, dev_id, times, timeout_create, ti
 
         Returns:
         -----------------------------
-        None
-        -----------------------------
         '''
-
-    # testing if auto_schedule work with time limit
-    timelimit=ceil(timeout_create)
-    signal.signal(signal.SIGALRM, handler)
-    time_now=time.time()
-    signal.alarm(timelimit)
-
     # import student module
     try:
         student_module = load_module('student_module', *find_module('auto_schedule'))
     except ImportError as e:
-        print('An error occurs when importing auto_schedule module')
-        print(e)
+        string = 'An error occurs when importing `auto_schedule` module\n' + str(e)
+        time_count.put([string, -1])
         return -1
 
-    try:
-        s, bufs = _auto_schedule(student_module.auto_schedule, func, shape)
-    except Exception as e:
-        traceback.print_exc()
-        print("failed in auto_schedule!")
-        print(e)
+    # scheduling
+    s, bufs = _auto_schedule(student_module.auto_schedule, func, shape, time_count, timeout_create)
+    if s is None or bufs is None:
         return -1
 
-    timepass=time.time()-time_now
-    signal.signal(signal.SIGALRM,signal.SIG_IGN)
-    if timepass>timeout_create:
-        print("Timeout in auto_schedule!")
+    # evaluating
+    ret = build_and_run(s, bufs, torch_func, shape, time_count, times, dev_id, target, timeout_cal)
+    if ret < 0:
         return -1
-
-    # testing calculating speed in Build_and_Run with time limit
-    timelimit=ceil(timeout_cal)
-    signal.alarm(timelimit)
-    signal.signal(signal.SIGALRM, handler)
-    try:
-        build_and_run(s, bufs, torch_func, shape, time_count,
-                times, dev_id, target)
-    except Exception as e:
-        print("failed in Build_and_Run!")
-        print(e)
-        return -1
-
-    timepass=time.time()-time_now
-    signal.signal(signal.SIGALRM,signal.SIG_IGN)
-    if timepass>timeout_cal:
-        # print("Timeout in Build_and_Run!")
-        return -1
+    return 0
 
 
-def evaluate(torch_func, func, shape, target, dev_id=0, timeout_create=10.0, timeout_cal=10.0, times=10, max_proc_num = 4):
+def evaluate(torch_func, func, shape, target="llvm", dev_id=0, timeout_create=20 * 60, timeout_cal=10.0, times=10):
     '''evaluating auto_schedule with a single shape
 
         Args:
@@ -489,21 +490,17 @@ def evaluate(torch_func, func, shape, target, dev_id=0, timeout_create=10.0, tim
         '''
     assert shape != None, "empty shape!"
 
-    # proc = []
-    # number = len(shape)
-    # time_count = [Queue() for i in range(number)]
     time_count = Queue()
     try:
         p = Process(target=_evaluate, args=(
-            torch_func, func, shape, target, dev_id, times, timeout_create,
-            timeout_cal, time_count))
+            torch_func, func, shape, time_count, target, dev_id, times, timeout_create,
+            timeout_cal))
         p.start()
-        # proc.append(p)
-    except:
-        print("failed in creating process!")
+    except Exception as e:
+        print("Failed in creating process for shape {}\n{}".format(shape, str(e)))
 
     # waiting for testing
-    timeout = timeout_create+timeout_cal
+    timeout = timeout_create + timeout_cal + 10.0 # make up for torch wastes
     beg = time.time()
     try:
         while time.time() - beg < timeout:
@@ -511,30 +508,26 @@ def evaluate(torch_func, func, shape, target, dev_id=0, timeout_create=10.0, tim
                 time.sleep(.1)
             else:
                 break
-            '''
-            if any(p.is_alive() for p in proc):
-                time.sleep(.1)
-            else:
-                break
-            '''
         else:
             p.terminate()
             p.join()
-    except:
-        print("failed in waiting for evaluating")
+    except Exception as e:
+        print("Shape {}: failed in process\n{}".format(shape, str(e)))
 
     # collecting testing result
-    # ans = [[[-1] for col in range(2)] for i in range(number)]
     ans = [-1, -1]
     if not time_count.empty():
         auto_time, torch_time = time_count.get()
-        if torch_time == -1:
-            print("time out in torch fuction!")
-        elif auto_time != -1:
-            ans = [auto_time, torch_time]
+        if isinstance(auto_time, str):
+            print("Exceptons occur in shape {}".format(shape))
+            print(auto_time)
         else:
-            print("failed in auto_schedule or time out!")
-
+            ans = [auto_time, torch_time]
+    else:
+        print("Shape {} can't get results!".format(shape))
+    # clean the queue
+    time_count.close()
+    del time_count
     return ans
 
 # overload Pool in order to non-daemonize
@@ -548,7 +541,7 @@ class NonDaemonProcess(Process):
 class NewPool(pool.Pool):
     Process = NonDaemonProcess
 
-def parallel_evaluate():
+def parallel_evaluate(parallel=1):
     """evaluate process
 
     student level : synchro
@@ -558,6 +551,9 @@ def parallel_evaluate():
     # dir preparation
     res_file = 'project2_score.txt'
     res_path = res_file
+    time_create = 10.0 # 20 * 60
+    time_cal = 10.0
+    number_test = 10
 
     # test coeffs; currently random
     conv2d_shapes = config.conv_shapes.copy()
@@ -574,59 +570,85 @@ def parallel_evaluate():
     # prob_exceptions = ('Import Failure', 'illegal auto_schedule', 'TLE auto_schedule', 'Build Failure', 'TLE run')
 
     # evaluate func
-    def pool_evaluate(shapes, veri_func, func, target):
+    def pool_evaluate(shapes, veri_func, func, target="llvm"):
         # create process Pool for shapes
         p = NewPool()
         run_time = []
         # exception_stat = [0, 0, 0, 0, 0]
         exception_stat = 0
         sub_procs = []
-        for shape in shapes:
-            subp = p.apply_async(evaluate, (veri_func, func, shape, target))
+        for i, shape in enumerate(shapes):
+            subp = p.apply_async(evaluate, (veri_func, func, shape, target, i, time_create, time_cal, number_test))
             sub_procs.append(subp)
-            '''
-            if case_time <= -1:
-                exception_stat[-1 - case_time] += 1
-                run_time.append([1, 0])
-            else:
-                run_time.append(case_time)
-            '''
+
         p.close()
         p.join()
         
-        for subp in sub_procs:
-            case_time = subp.get()
-            if case_time[0] == -1:
+        ret = []
+        for i, subp in enumerate(sub_procs):
+            try:
+                case_time = subp.get(timeout=1.0)
+            except Exception as e:
+                print("Can't get shape {} results\n{}".format(shapes[i], str(e)))
+                case_time = [-1, -1]
+            if case_time[0] < 0:
                 exception_stat += 1
-                run_time.append([1, 0])
-            else:
-                run_time.append(case_time)
-        score_list = list(map(score_calculate, run_time))
+            ret.append(case_time)
 
-        return score_list, exception_stat
+        return ret, exception_stat
 
     # stdout logs
-    logs = '\rprocessing... | [passed: {}s]'.format(int(time.time() - start_time))
+    logs = '\rProcessing begins...'
     sys.stdout.write(logs + '\n')
     sys.stdout.flush()
 
     # evaluate
-    gemm_scores, gemm_exc = pool_evaluate(gemm_shapes, torch_gemm, gemm, target)
-    conv_scores, conv_exc = pool_evaluate(conv2d_shapes, torch_conv2d, conv2d_nchw, target)
+    num_gemms = len(gemm_shapes)
+    outer = ceil(num_gemms / parallel)
+    gemm_ret = []
+    gemm_error_count = 0
+    for i in range(outer):
+        part_gemm_ret, part_gemm_error = pool_evaluate(gemm_shapes[i * parallel:(i+1) * parallel], torch_gemm, batch_gemm, target)
+        gemm_ret.extend(part_gemm_ret)
+        gemm_error_count += part_gemm_error
 
-    if gemm_exc + conv_exc:
-        exception_info = ' exception raises in {} cases'.format(gemm_exc + conv_exc)
+    num_convs = len(conv2d_shapes)
+    outer = ceil(num_convs / parallel)
+    conv_ret = []
+    conv_error_count = 0
+    for i in range(outer):
+        part_conv_ret, part_conv_error = pool_evaluate(conv2d_shapes[i * parallel:(i+1) * parallel], torch_conv2d, conv2d_nchw, target)
+        conv_ret.extend(part_conv_ret)
+        conv_error_count += part_conv_error
+    
+    if gemm_error_count or conv_error_count:
+        exception_info = ' exception raises in {} cases'.format(gemm_error_count + conv_error_count)
     else:
         exception_info = ' No exceptions'
-    '''
-    for i in range(5):
-        if gemm_exception[i] + conv_exception[i] > 0:
-            exception_info += prob_exceptions[i] + 'in {} cases'.format(gemm_exception[i] + conv_exception[i])
-    '''
-    score_list = gemm_scores + conv_scores
+    
+    print()
+    print("#####################################################")
+    print("The results:\n")
+    string = "Time costs of GEMMs\n"
+    for shape, ret in zip(gemm_shapes, gemm_ret):
+        times = [ret[0] if ret[0] > 0 else "Timeout", ret[1] if ret[1] > 0 else "Not evaluted"]
+        string += "{}: yours: {}(ms), torch: {}(ms)\n".format(shape, times[0], times[1])
+    print(string)
+
+    string = "Time costs of Conv2ds\n"
+    for shape, ret in zip(conv2d_shapes, conv_ret):
+        times = [ret[0] if ret[0] > 0 else "Timeout", ret[1] if ret[1] > 0 else "Not evaluted"]
+        string += "{}: yours: {}(ms), torch: {}(ms)\n".format(shape, times[0], times[1])
+    print(string)
+
+    score_list = list(map(score_calculate, gemm_ret + conv_ret))
 
     write_score(res_path, score_list, score_item, exception_info)
 
+    # stdout logs
+    logs = '\rall done!'
+    sys.stdout.write(logs + '\n')
+    sys.stdout.flush()
     return
 
 def write_score(res_file, score_list, score_item, prob_error=''):
@@ -655,7 +677,9 @@ def write_score(res_file, score_list, score_item, prob_error=''):
     line += 'exceptions:{}\n'.format(prob_error)
     with open(res_file, 'w') as f:
         f.write(line)
+    print(line)
     return
+
 
 def score_calculate(time_tuple):
     """scores based on look-up table
@@ -673,18 +697,26 @@ def score_calculate(time_tuple):
     time_tvm = time_tuple[0]
     time_torch = time_tuple[1]
 
-    if time_tvm == -1:
-        return -1
+    if time_tvm <= 0:
+        return 0.0
     perf_rate = time_torch / time_tvm
-    if perf_rate <= 0.1:
-        return 0
+    if 0 < perf_rate <= 0.1:
+        return 0.0
     elif 0.1 < perf_rate <= 0.2:
         return 0.5
-    elif 0.2 < perf_rate <= 0.4:
+    elif 0.2 < perf_rate <= 0.3:
+        return 1.0
+    elif 0.3 < perf_rate <= 0.4:
         return 1.5
     elif 0.4 < perf_rate <= 0.5:
-        return  2.5
-    elif 0.5 < perf_rate <= 0.7:
+        return 2.0
+    elif 0.5 < perf_rate <= 0.6:
+        return 2.5
+    elif 0.7 < perf_rate <= 0.7:
+        return 3.0
+    elif 0.7 < perf_rate <= 0.8:
+        return 3.5
+    elif 0.8 < perf_rate <= 0.9:
         return 4.0
     else:
         return 5.0
