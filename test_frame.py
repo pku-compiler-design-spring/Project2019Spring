@@ -298,7 +298,7 @@ def build_and_run(s, tensors, shape, time_count, count=10, device_id=0, target="
         string = "Can not found device !!!\n" + str(e)
         time_count.put([string, -1])
         return -1
-   
+
     try:
         output_tensor = tensors[-1]
         del tensors[-1]
@@ -307,7 +307,7 @@ def build_and_run(s, tensors, shape, time_count, count=10, device_id=0, target="
         time_count.put(string)
         return -1
     # Craft input data.
- 
+
     try:
         input_tvm = []
 
@@ -588,14 +588,14 @@ def evaluate(student_id, func, shape, res_path, score_item, unpack_path, target=
         print("Shape {}: failed in process\n{}".format(shape, str(e)))
 
     # collecting testing result
-    ans = [-1, shape]
+    ans = -1
     if not time_count.empty():
         auto_time = time_count.get()
         if isinstance(auto_time, str):
             print("Exceptons occur in shape {}".format(shape))
             print(auto_time)
         else:
-            ans = [auto_time, shape]
+            ans = auto_time
     else:
         print("Shape {} can't get results!".format(shape))
     # clean the queue
@@ -679,30 +679,29 @@ def parallel_evaluate():
         p.close()
         p.join()
 
-        run_time={}
+        run_time=[]
         for subp in sub_procs:
             case_time = subp.get()
-            if case_time[0] == -1:
+            if case_time == -1:
                 exception_stat += 1
-            run_time[case_time[1]]=case_time[0]
+            run_time.append(case_time)
 
         return run_time, exception_stat
 
-    torch_time = {}
-    shape_list = conv2d_shapes + gemm_shapes
-    for i in conv2d_shapes:
-        ans = torch_run(conv2d_nchw, torch_conv2d, i, number_test)
+    torch_time = []
+    for i in gemm_shapes:
+        ans = torch_run(batch_gemm, torch_batch_gemm, i, number_test)
         if not isinstance(ans, str):
-            torch_time[i]=ans
+            torch_time.append(ans)
         else:
             sys.stdout.write(ans+"now exit...")
             sys.stdout.flush()
             return -1
 
-    for i in gemm_shapes:
-        ans = torch_run(batch_gemm, torch_batch_gemm, i, number_test)
+    for i in conv2d_shapes:
+        ans = torch_run(conv2d_nchw, torch_conv2d, i, number_test)
         if not isinstance(ans, str):
-            torch_time[i]=ans
+            torch_time.append(ans)
         else:
             sys.stdout.write(ans+"now exit...")
             sys.stdout.flush()
@@ -738,14 +737,10 @@ def parallel_evaluate():
         else:
             exception_info = ' No exceptions'
 
-        time_dict = gemm_time
-        time_dict.update(conv_time)
-        time_list=[]
-        for i in shape_list:
-            if time_dict[i]>0:
-                time_list.append([time_dict[i],torch_time[i]])
-            else:
-                time_list.append([1,0])
+        tvmtime_list= gemm_time + conv_time
+        time_list = []
+        for i in range(len(tvmtime_list)):
+                time_list.append([tvmtime_list[i],torch_time[i]])
         score_list=list(map(score_calculate,time_list))
 
         write_score(student_id, res_path, score_list, score_item, exception_info)
