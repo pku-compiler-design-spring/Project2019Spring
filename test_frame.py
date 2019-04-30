@@ -617,7 +617,7 @@ class NewPool(pool.Pool):
     Process = NonDaemonProcess
 
 
-def parallel_evaluate():
+def parallel_evaluate(parallel=1):
     """evaluate process
 
     student level : synchro
@@ -727,17 +727,34 @@ def parallel_evaluate():
             sys.stdout.write('An error occurs when unpacking the archive:'+ filezip + '\n')
             sys.stdout.flush()
             continue
-
+            
         # evaluate
-        gemm_time, gemm_exc = pool_evaluate(time_create, time_cal, number_test, res_path, score_item, unpack_path, gemm_shapes, student_id, batch_gemm, target)
-        conv_time, conv_exc = pool_evaluate(time_create, time_cal, number_test, res_path, score_item, unpack_path, conv2d_shapes, student_id, conv2d_nchw, target)
+        num_gemms = len(gemm_shapes)
+        outer = ceil(num_gemms / parallel)
+        gemm_ret = []
+        gemm_error_count = 0
+        for i in range(outer):
+            part_gemm_ret, part_gemm_error = pool_evaluate(time_create, time_cal, number_test, res_path, score_item,
+                    unpack_path, gemm_shapes[i * parallel:(i+1) * parallel], student_id, batch_gemm, target)
+            gemm_ret.extend(part_gemm_ret)
+            gemm_error_count += part_gemm_error
 
-        if gemm_exc + conv_exc:
-            exception_info = ' exception raises in {} cases'.format(gemm_exc + conv_exc)
+        num_convs = len(conv2d_shapes)
+        outer = ceil(num_convs / parallel)
+        conv_ret = []
+        conv_error_count = 0
+        for i in range(outer):
+            part_conv_ret, part_conv_error = pool_evaluate(time_create, time_cal, number_test, res_path, score_item,
+                    unpack_path, conv2d_shapes[i * parallel:(i+1) * parallel], student_id, conv2d_nchw, target)
+            conv_ret.extend(part_conv_ret)
+            conv_error_count += part_conv_error
+
+        if gemm_error_count + conv_error_count:
+            exception_info = ' exception raises in {} cases'.format(gemm_error_count + conv_error_count)
         else:
             exception_info = ' No exceptions'
 
-        tvmtime_list= gemm_time + conv_time
+        tvmtime_list= gemm_ret + conv_ret
         time_list = []
         for i in range(len(tvmtime_list)):
                 time_list.append([tvmtime_list[i],torch_time[i]])
