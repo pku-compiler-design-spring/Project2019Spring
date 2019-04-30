@@ -721,10 +721,10 @@ def parallel_evaluate():
         unpack_path = os.path.join(imp_dir, student_id + '/')
         try:
             shutil.unpack_archive(zip_path, unpack_path)
-        except (ValueError, ReadError):
+        except (ValueError, shutil.ReadError):
             score_list = [0 for i in range(20)]
             write_score(student_id, res_path, score_list, score_item, 'Error in Unpacking')
-            sys.stdout.write('An error occurs when unpacking the archive:'+ filezip)
+            sys.stdout.write('An error occurs when unpacking the archive:'+ filezip + '\n')
             sys.stdout.flush()
             continue
 
@@ -819,3 +819,4 @@ def score_calculate(time_tuple):
 
 
 if __name__ == '__main__':
+    parallel_evaluate()
