@@ -53,8 +53,7 @@ def torch_conv2d(inputs, weight, bias=None, stride=1, padding=0, dilation=1, gro
     -----------------------------
     inputs, weight: torch.tensor
 
-    bias  : tvm.tensor.tensor
-        shape [out_channel]
+    bias    : (optional:None) torch.tensor
 
     stride  : (optional:1) int or tuple
 
@@ -266,10 +265,8 @@ def build_and_run(s, tensors, shape, time_count, count=10, device_id=0, target="
         -----------------------------
         s           : schedule.Schedule get form the student's auto_schedule
 
-        Tensor      : list
+        tensors      : list
             the input tensors and the output tensor
-
-        control_f   : the torch function
 
         shape       : arg for control_f
 
@@ -279,16 +276,15 @@ def build_and_run(s, tensors, shape, time_count, count=10, device_id=0, target="
 
         device_id   : (optional: 0)the id of CPU
 
+        target      : (optional: "llvm")string
+
         timeout     : (optional: 10.0)time limit for culation
         -----------------------------
 
         Returns:
         -----------------------------
-        [tvm_time, torch_time]:
-            [float , flaot]
-        which indicates
-        the total time of running scheduled tvm calculation and
-        the total time of running torch calculation
+        tvm_time    : float
+            the total time of running scheduled tvm calculation
         -----------------------------
         """
     # Create ctx.
@@ -361,31 +357,19 @@ def torch_run(func, control_f, shape, count=10):
 
         Args:
         -----------------------------
-        s           : schedule.Schedule get form the student's auto_schedule
-
-        Tensor      : list
-            the input tensors and the output tensor
+        func        : conv2d_nchw or batch_gemm
 
         control_f   : the torch function
 
         shape       : arg for control_f
 
-        time_count  : used for record the running time
-
         count       : (optional: 10)the number rounds repeat testing
-
-        device_id   : (optional: 0)the id of CPU
-
-        timeout     : (optional: 10.0)time limit for culation
         -----------------------------
 
         Returns:
         -----------------------------
-        [tvm_time, torch_time]:
-            [float , flaot]
-        which indicates
-        the total time of running scheduled tvm calculation and
-        the total time of running torch calculation
+        torch_time    : float
+            the total time of running torch calculation
         -----------------------------
         """
 
@@ -442,7 +426,9 @@ def _auto_schedule(auto_schedule_func, func, shape, queue, timeout=20 * 60):
 
         shape               : args for auto_schedule
 
-        timeout_create      : (optional: 20*60)time limit for auto_schedule_func
+        queue               : Queue
+
+        timeout             : (optional: 20*60) time limit of auto_schedule
         -----------------------------
 
         Returns:
@@ -475,31 +461,34 @@ def _evaluate(student_id, func, shape, time_count, res_path, score_item, unpack_
 
         Args:
         -----------------------------
-        torch_func      :  torch_conv2d or torch_batch_gemm
-            interface of torch function
-
-        auto_schedule   : function from student 
+        student_id      : student module name
 
         func            : conv2d_nchw or batch_gemm
 
         shape           : list
             args for func
 
-        target          : string
-
-        dev_id          : int
-
-        times           : int
-            times of calculating in Build_and_Run
-
-        timeout_create  : float
-            time limit in creating schedule
-
-        timeout_cal     : float
-            time limit in calculating
-
         time_count      : Queue
             for testing result transferring
+
+        res_path        : string
+        
+        score_item      : list of string
+        
+        unpack_path     : string
+
+        target          : (optional: "llvm") string
+
+        dev_id          : (optional: 0) int
+
+        times           : (optional: 10) int
+            times of calculating in Build_and_Run
+
+        timeout_create  : (optional: 20*60) float
+            time limit in creating schedule
+
+        timeout_cal     : (optional: 10.0) float
+            time limit in calculating
         -----------------------------
 
         Returns:
@@ -532,9 +521,6 @@ def evaluate(student_id, func, shape, res_path, score_item, unpack_path, target=
 
         Args:
         -----------------------------
-        torch_func      :  torch_conv2d or torch_batch_gemm
-            interface of torch function
-
         student_id      : student module name
 
         func            : conv2d_nchw or batch_gemm
@@ -542,23 +528,29 @@ def evaluate(student_id, func, shape, res_path, score_item, unpack_path, target=
         shape           : a single shape
             args for func
 
-        target          : string
+        res_path        : string
+        
+        score_item      : list of string
+        
+        unpack_path     : string
+
+        target          : (optional: "llvm") string
 
         dev_id          : (optional: 0) int
 
-        timeout_create  : (optional: 10.0) float
+        timeout_create  : (optional: 20*60) float
             time limit in creating schedule
 
         timeout_cal     : (optional: 10.0) float
             time limit in calculating
 
         times           : (optional: 10) int
-            times of calculating in Build_and_Run
+            times of calculating in ruild_and_run
         -----------------------------
 
         Returns:
         -----------------------------
-        list    : [auto_time,torch_time] for each shape
+        list    : auto_time for each shape
         -----------------------------
         '''
     assert shape != None, "empty shape!"
@@ -619,10 +611,11 @@ class NewPool(pool.Pool):
 
 def parallel_evaluate(parallel=1):
     """evaluate process
-
-    student level : synchro
-    operator level : synchro
-    shape level : asynchro
+    parallel        : int
+        parallel number in pool_evaluate
+    student level   : synchro
+    operator level  : synchro
+    shape level     : asynchro
     """
     # dir preparation
     sub_dir = '../submits'
@@ -727,7 +720,7 @@ def parallel_evaluate(parallel=1):
             sys.stdout.write('An error occurs when unpacking the archive:'+ filezip + '\n')
             sys.stdout.flush()
             continue
-            
+
         # evaluate
         num_gemms = len(gemm_shapes)
         outer = ceil(num_gemms / parallel)
