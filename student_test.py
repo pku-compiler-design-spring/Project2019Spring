@@ -697,29 +697,29 @@ def score_calculate(time_tuple):
     time_tvm = time_tuple[0]
     time_torch = time_tuple[1]
 
-    if time_tvm <= 0:
+    if time_tvm < 0:
         return 0.0
     perf_rate = time_torch / time_tvm
-    if 0 < perf_rate <= 0.1:
+    if 0 <= perf_rate < 0.1:
         return 0.0
-    elif 0.1 < perf_rate <= 0.2:
-        return 0.5
-    elif 0.2 < perf_rate <= 0.3:
-        return 1.0
-    elif 0.3 < perf_rate <= 0.4:
-        return 1.5
-    elif 0.4 < perf_rate <= 0.5:
-        return 2.0
-    elif 0.5 < perf_rate <= 0.6:
-        return 2.5
-    elif 0.7 < perf_rate <= 0.7:
-        return 3.0
-    elif 0.7 < perf_rate <= 0.8:
+    elif 0.1 <= perf_rate < 0.2:
+        return 0.7
+    elif 0.2 <= perf_rate < 0.3:
+        return 1.4
+    elif 0.3 <= perf_rate < 0.4:
+        return 2.1
+    elif 0.4 <= perf_rate < 0.5:
+        return 2.8
+    elif 0.5 <= perf_rate < 0.6:
         return 3.5
-    elif 0.8 < perf_rate <= 0.9:
-        return 4.0
+    elif 0.6 <= perf_rate < 0.7:
+        return 4.2
+    elif 0.7 <= perf_rate < 0.8:
+        return 4.9 
+    elif 0.8 <= perf_rate < 0.9:
+        return 5.6
     else:
-        return 5.0
+        return 7.0
 
 if __name__ == '__main__':
     parallel_evaluate()
