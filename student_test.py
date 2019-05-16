@@ -531,15 +531,40 @@ def evaluate(torch_func, func, shape, target="llvm", dev_id=0, timeout_create=20
     return ans
 
 # overload Pool in order to non-daemonize
-class NonDaemonProcess(Process):
-    def _get_daemon(self):
-        return False
-    def _set_daemon(self, value):
-        pass
-    daemon = property(_get_daemon, _set_daemon)
+# class NonDaemonProcess(Process):
+#     def __init__(self, *args, **kwargs):
+#         super(Process, self).__init__(*args, **kwargs)
+
+#     def _get_daemon(self):
+#         return False
+
+#     def _set_daemon(self, value):
+#         pass
+
+#     daemon = property(_get_daemon, _set_daemon)
+
+# class NewPool(pool.Pool):
+#     def __init__(self, *args, **kwargs):
+#         super(pool.Pool, self).__init__(*args, **kwargs)
+
+#     Process = NonDaemonProcess
 
 class NewPool(pool.Pool):
-    Process = NonDaemonProcess
+    def Process(self, *args, **kwds):
+        proc = super(NewPool, self).Process(*args, **kwds)
+
+        class NonDaemonProcess(proc.__class__):
+            """Monkey-patch process to ensure it is never daemonized"""
+            @property
+            def daemon(self):
+                return False
+
+            @daemon.setter
+            def daemon(self, val):
+                pass
+
+        proc.__class__ = NonDaemonProcess
+        return proc
 
 def parallel_evaluate(parallel=1):
     """evaluate process
