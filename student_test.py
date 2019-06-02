@@ -576,7 +576,7 @@ def parallel_evaluate(parallel=1):
     # dir preparation
     res_file = 'project2_score.txt'
     res_path = res_file
-    time_create = 10.0 # 20 * 60
+    time_create = 20 * 60
     time_cal = 10.0
     number_test = 10
 
